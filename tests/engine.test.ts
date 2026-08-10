@@ -1048,4 +1048,85 @@ describe('syncMeetings', () => {
     expect(entryA![1]).toMatch(/^wispr_id: m-case-a$/m);
     expect(entryB![1]).toMatch(/^wispr_id: m-case-b$/m);
   });
+
+  describe('note <-> transcript bidirectional linking', () => {
+    it('links the transcript back to its note, and the note to its transcript', async () => {
+      const meetingId = 'm-backlink';
+      const { dir, cleanup } = withTranscriptFixture(meetingId);
+      try {
+        const v = fakeVault();
+        await syncMeetings({
+          vault: v.adapter,
+          settings: { ...DEFAULT_SETTINGS, syncNotes: true, syncTranscripts: true },
+          databasePath: DB,
+          meetingsDir: dir,
+          openDatabase: fakeOpenDatabase([meeting({ id: meetingId, title: 'Linked' })]),
+        });
+
+        const notePath = v.byId.get(`${meetingId}:note`)!;
+        const transcriptPath = v.byId.get(`${meetingId}:transcript`)!;
+        expect(notePath).toBeDefined();
+        expect(transcriptPath).toBeDefined();
+
+        // Each side names the other, by the path the other was actually
+        // written to — not a guess at what the pattern would produce.
+        const noteStem = notePath.replace(/\.md$/, '');
+        const transcriptStem = transcriptPath.replace(/\.md$/, '');
+        expect(v.files.get(transcriptPath)).toContain(`note: "[[${noteStem}]]"`);
+        expect(v.files.get(notePath)).toContain(`[[${transcriptStem}]]`);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('writes no back-link when notes are switched off', async () => {
+      const meetingId = 'm-backlink-notes-off';
+      const { dir, cleanup } = withTranscriptFixture(meetingId);
+      try {
+        const v = fakeVault();
+        await syncMeetings({
+          vault: v.adapter,
+          settings: { ...DEFAULT_SETTINGS, syncNotes: false, syncTranscripts: true },
+          databasePath: DB,
+          meetingsDir: dir,
+          openDatabase: fakeOpenDatabase([meeting({ id: meetingId, title: 'No note' })]),
+        });
+        const transcriptPath = v.byId.get(`${meetingId}:transcript`)!;
+        // There is no note to point at; a link to a file this run never
+        // creates would render as a permanently broken link.
+        expect(v.files.get(transcriptPath)).not.toContain('note: ');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('allocates each meeting exactly one note path, despite the transcript needing it first', async () => {
+      // Regression guard for the reordering this feature required: the note
+      // path is now resolved in the transcript branch so it can be linked,
+      // and re-resolving it in the note branch would consume a SECOND name
+      // from the shared collision set — writing the note somewhere the
+      // transcript does not point, and leaving a stray file behind.
+      const meetingId = 'm-single-alloc';
+      const { dir, cleanup } = withTranscriptFixture(meetingId);
+      try {
+        const v = fakeVault();
+        await syncMeetings({
+          vault: v.adapter,
+          settings: { ...DEFAULT_SETTINGS, syncNotes: true, syncTranscripts: true },
+          databasePath: DB,
+          meetingsDir: dir,
+          openDatabase: fakeOpenDatabase([meeting({ id: meetingId, title: 'Once only' })]),
+        });
+
+        expect(v.files.size).toBe(2); // exactly one note + one transcript
+        const notePath = v.byId.get(`${meetingId}:note`)!;
+        const transcriptPath = v.byId.get(`${meetingId}:transcript`)!;
+        expect(v.files.get(transcriptPath)).toContain(`note: "[[${notePath.replace(/\.md$/, '')}]]"`);
+        // And the note the link names is the note that actually exists.
+        expect(v.files.has(notePath)).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+  });
 });

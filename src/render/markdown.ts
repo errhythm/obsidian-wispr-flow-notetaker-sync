@@ -4,7 +4,14 @@ import { speakerName } from '../wispr/speakers';
 export interface RenderOptions {
   resolveSpeakerNames: boolean;
   summaryMode: 'callout' | 'heading' | 'omit';
+  /** Vault path (without `.md`) of this meeting's transcript, for the note
+   *  to link to. Set only once that transcript has actually been written. */
   transcriptLink?: string;
+  /** Vault path (without `.md`) of this meeting's note, for the transcript
+   *  to link back to. Set only when notes are being written at all and the
+   *  transcript is a file of its own — `combined` mode has no second file,
+   *  and a transcripts-only sync has no note to point at. */
+  noteLink?: string;
 }
 
 /** Wispr stores "2026-08-06 06:51:41.341 +00:00". V8 happens to parse that,
@@ -84,7 +91,12 @@ function title(meeting: MeetingRow): string {
 function frontmatter(
   meeting: MeetingRow,
   speakers: Map<number, string>,
-  type: 'note' | 'transcript'
+  type: 'note' | 'transcript',
+  /** Wiki-link target for the file on the other side of the pair, if there
+   *  is one: a transcript's note, or (historically, via the body) a note's
+   *  transcript. Emitted as `note:` on transcripts only — the note keeps
+   *  linking to its transcript in the body, where it already did. */
+  counterpartLink?: string
 ): string {
   const created = parseWisprDate(meeting.createdAt);
   const updated = parseWisprDate(meeting.modifiedAt);
@@ -104,6 +116,12 @@ function frontmatter(
   if (names.length) {
     lines.push('speakers:');
     for (const n of names) lines.push(`  - ${yamlScalar(n)}`);
+  }
+  // Only on transcripts. A note's link to its transcript lives in the body
+  // and predates this; duplicating it into frontmatter would change every
+  // existing note's bytes on the next sync for no gain.
+  if (type === 'transcript' && counterpartLink) {
+    lines.push(`note: ${yamlScalar(`[[${counterpartLink}]]`)}`);
   }
   lines.push('source: wispr-flow', '---', '');
   return lines.join('\n');
@@ -303,7 +321,7 @@ export function renderTranscript(
   opts: RenderOptions
 ): string {
   const body = renderTranscriptBody(segments, speakers, opts);
-  const parts = [frontmatter(meeting, speakers, 'transcript')];
+  const parts = [frontmatter(meeting, speakers, 'transcript', opts.noteLink)];
   if (body) parts.push(body, '');
   return parts.join('\n');
 }

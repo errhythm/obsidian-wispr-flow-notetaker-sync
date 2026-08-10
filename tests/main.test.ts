@@ -26,12 +26,35 @@ let loadDataResult: unknown = {};
 // `registerInterval` expects, not Node's Timeout object). vitest's default
 // (node) environment has no global `window`, so stub just enough of it to
 // capture what onload() schedules.
-(
-  globalThis as unknown as { window: { setInterval: (fn: () => void, ms: number) => number } }
-).window = {
+interface StubWindow {
+  setInterval(fn: () => void, ms: number): number;
+  clearInterval(id: number): void;
+  setTimeout(fn: () => void, ms: number): number;
+  clearTimeout(id: number): void;
+}
+/** Interval ids passed to window.clearInterval, so the rescheduling tests
+ *  can assert that the superseded timer was actually cancelled and not just
+ *  shadowed by a second one. */
+const clearedIntervals: number[] = [];
+/** Status-bar auto-clear timers. Deliberately never fire on their own —
+ *  tests invoke the callback directly when they want the expiry. */
+const pendingTimeouts: Array<{ id: number; fn: () => void; ms: number }> = [];
+
+(globalThis as unknown as { window: StubWindow }).window = {
   setInterval: (_fn: () => void, ms: number) => {
     intervals.push({ ms });
     return intervals.length;
+  },
+  clearInterval: (id: number) => {
+    clearedIntervals.push(id);
+  },
+  setTimeout: (fn: () => void, ms: number) => {
+    pendingTimeouts.push({ id: pendingTimeouts.length + 1, fn, ms });
+    return pendingTimeouts.length;
+  },
+  clearTimeout: (id: number) => {
+    const i = pendingTimeouts.findIndex((t) => t.id === id);
+    if (i !== -1) pendingTimeouts.splice(i, 1);
   },
 };
 
@@ -53,6 +76,10 @@ Object.defineProperty(globalThis, 'navigator', {
   writable: true,
 });
 
+interface StubStatusBarItem { text: string; removed: boolean; setText(t: string): void; remove(): void }
+const statusBarItems: StubStatusBarItem[] = [];
+const statusBarTexts: string[] = [];
+
 vi.mock('obsidian', () => {
   class Notice {
     constructor(message: string, _timeout?: number) {
@@ -72,6 +99,26 @@ vi.mock('obsidian', () => {
     addSettingTab(): void {}
     registerInterval(id: number): number {
       return id;
+    }
+    /** Mirrors Obsidian's Plugin.addStatusBarItem(), which returns a real
+     *  HTMLElement. Only the two members the plugin actually touches are
+     *  modelled — setText and remove — and every element handed out is
+     *  recorded so tests can assert on what the status bar showed and
+     *  whether it was cleaned up. */
+    addStatusBarItem(): { setText(t: string): void; remove(): void } {
+      const el = {
+        text: '',
+        removed: false,
+        setText(t: string): void {
+          this.text = t;
+          statusBarTexts.push(t);
+        },
+        remove(): void {
+          this.removed = true;
+        },
+      };
+      statusBarItems.push(el);
+      return el as unknown as { setText(t: string): void; remove(): void };
     }
     loadData(): Promise<unknown> {
       return Promise.resolve(loadDataResult);
@@ -197,6 +244,10 @@ beforeEach(() => {
   adapterFiles.clear();
   clipboardWrites.length = 0;
   syncCalls.length = 0;
+  clearedIntervals.length = 0;
+  pendingTimeouts.length = 0;
+  statusBarItems.length = 0;
+  statusBarTexts.length = 0;
   loadDataResult = {};
   locateWisprImpl = () =>
     Promise.resolve({
@@ -765,5 +816,142 @@ describe('duplicate vault-index entries are surfaced, not silently overwritten (
 
     expect(log.some((l) => l.includes('duplicate'))).toBe(false);
     expect(notices.some((n) => n.includes('duplicate'))).toBe(false);
+  });
+});
+
+
+describe('periodic sync rescheduling', () => {
+  it('schedules nothing when periodic sync is off', async () => {
+    await loadPlugin({ periodicSyncEnabled: false });
+    expect(intervals).toHaveLength(0);
+  });
+
+  it('applies a changed interval immediately, cancelling the old timer', async () => {
+    const plugin = await loadPlugin({ periodicSyncEnabled: true, syncIntervalSeconds: 600 });
+    expect(intervals).toEqual([{ ms: 600_000 }]);
+
+    // What the settings tab does when the number field changes.
+    plugin.settings.syncIntervalSeconds = 900;
+    plugin.rescheduleSync();
+
+    // The old timer must be CANCELLED, not merely shadowed: leaving it
+    // running is what an unregisterable registerInterval would have done,
+    // and it would fire on the stale schedule forever.
+    expect(clearedIntervals).toHaveLength(1);
+    expect(intervals).toEqual([{ ms: 600_000 }, { ms: 900_000 }]);
+  });
+
+  it('stops syncing when periodic sync is switched off, without a reload', async () => {
+    const plugin = await loadPlugin({ periodicSyncEnabled: true, syncIntervalSeconds: 600 });
+    plugin.settings.periodicSyncEnabled = false;
+    plugin.rescheduleSync();
+
+    expect(clearedIntervals).toHaveLength(1);
+    expect(intervals).toHaveLength(1); // nothing new scheduled
+  });
+
+  it('starts syncing when switched on, without a reload', async () => {
+    const plugin = await loadPlugin({ periodicSyncEnabled: false, syncIntervalSeconds: 120 });
+    expect(intervals).toHaveLength(0);
+
+    plugin.settings.periodicSyncEnabled = true;
+    plugin.rescheduleSync();
+    expect(intervals).toEqual([{ ms: 120_000 }]);
+  });
+
+  it('cancels the timer on unload and never reschedules afterwards', async () => {
+    const plugin = await loadPlugin({ periodicSyncEnabled: true, syncIntervalSeconds: 600 });
+    plugin.onunload();
+    expect(clearedIntervals).toHaveLength(1);
+
+    // A settings write racing an unload must not resurrect the timer.
+    plugin.rescheduleSync();
+    expect(intervals).toHaveLength(1);
+  });
+});
+
+describe('status bar', () => {
+  it('shows progress during a sync and the result after, then clears itself', async () => {
+    syncMeetingsImpl = () =>
+      Promise.resolve({
+        written: 2,
+        skipped: 0,
+        transcripts: 1,
+        transcriptLinesSkipped: 0,
+        watermark: null,
+        errors: [],
+      });
+    const plugin = await loadPlugin();
+    await plugin.runSync();
+
+    expect(statusBarTexts[0]).toBe('Wispr Flow: syncing…');
+    expect(statusBarTexts.at(-1)).toBe('Wispr Flow: 2 note(s), 1 transcript(s)');
+
+    // The result is transient: firing the pending timer removes the item,
+    // so an idle vault carries no status bar UI at all.
+    expect(pendingTimeouts).toHaveLength(1);
+    pendingTimeouts[0].fn();
+    expect(statusBarItems.every((el) => el.removed)).toBe(true);
+  });
+
+  it('reports problems in the status bar', async () => {
+    syncMeetingsImpl = () =>
+      Promise.resolve({
+        written: 1,
+        skipped: 0,
+        transcripts: 0,
+        transcriptLinesSkipped: 0,
+        watermark: null,
+        errors: ['Meeting A: nope'],
+      });
+    const plugin = await loadPlugin();
+    await plugin.runSync();
+    expect(statusBarTexts.at(-1)).toContain('1 problem(s)');
+  });
+
+  it('does not leave "syncing…" on screen when the run fails', async () => {
+    syncMeetingsImpl = () => Promise.reject(new Error('boom'));
+    const plugin = await loadPlugin();
+    await plugin.runSync();
+    expect(statusBarTexts.at(-1)).toBe('Wispr Flow: sync failed');
+  });
+});
+
+describe('sync notification toggle', () => {
+  const quietSettings = { showSyncNotifications: false };
+
+  it('suppresses the routine start and completion notices when switched off', async () => {
+    const plugin = await loadPlugin(quietSettings);
+    await plugin.runSync();
+    expect(notices.filter((n) => /syncing…|note\(s\)/.test(n))).toHaveLength(0);
+  });
+
+  it('still reports a run that hit problems, because that is not routine noise', async () => {
+    syncMeetingsImpl = () =>
+      Promise.resolve({
+        written: 0,
+        skipped: 0,
+        transcripts: 0,
+        transcriptLinesSkipped: 0,
+        watermark: null,
+        errors: ['Meeting A: nope'],
+      });
+    const plugin = await loadPlugin(quietSettings);
+    await plugin.runSync();
+    expect(notices.some((n) => n.includes('1 problem(s)'))).toBe(true);
+  });
+
+  it('still reports an outright failure', async () => {
+    syncMeetingsImpl = () => Promise.reject(new Error('boom'));
+    const plugin = await loadPlugin(quietSettings);
+    await plugin.runSync();
+    expect(notices.some((n) => n.includes('Wispr Flow Sync failed'))).toBe(true);
+  });
+
+  it('shows both notices by default', async () => {
+    const plugin = await loadPlugin();
+    await plugin.runSync();
+    expect(notices.some((n) => n.includes('syncing…'))).toBe(true);
+    expect(notices.some((n) => n.includes('note(s)'))).toBe(true);
   });
 });

@@ -8,6 +8,11 @@ export interface WisprSyncSettings {
   periodicSyncEnabled: boolean;
   /** Seconds between automatic syncs. */
   syncIntervalSeconds: number;
+  /** Whether routine sync notices ("syncing…", the completion summary) are
+   *  shown. A sync that hit errors always reports, regardless: suppressing
+   *  the noise of a periodic sync is a different thing from hiding failures.
+   *  The status bar is unaffected — it is quiet enough to leave on. */
+  showSyncNotifications: boolean;
 
   // --- Notes ---
   syncNotes: boolean;
@@ -47,6 +52,7 @@ export interface WisprSyncSettings {
 export const DEFAULT_SETTINGS: WisprSyncSettings = {
   periodicSyncEnabled: false,
   syncIntervalSeconds: 1800,
+  showSyncNotifications: true,
 
   syncNotes: true,
   // Defaults to a Wispr-specific subfolder: users may also run Granola, and

@@ -302,6 +302,12 @@ export async function syncMeetings(deps: SyncDeps): Promise<SyncReport> {
       // alone.
       let transcriptLink: string | undefined;
       let combinedTranscriptBody: string | undefined;
+      // Allocated in the transcript branch below when a standalone
+      // transcript is written (so it can link back), and otherwise in the
+      // note branch. Either way it is allocated exactly once per meeting —
+      // composePath is not idempotent, since each call consumes a name out
+      // of the shared `usedPaths` set.
+      let notePath: string | undefined;
       if (settings.syncTranscripts) {
         const { segments, skipped } = await readTranscript(
           deps.meetingsDir,
@@ -352,10 +358,54 @@ export async function syncMeetings(deps: SyncDeps): Promise<SyncReport> {
                 used: usedPaths,
               });
             }
+            // Allocate the NOTE's path before writing the transcript, so the
+            // transcript can carry a `note:` back-link. Allocation order is
+            // deliberately unchanged — transcript first, then note — because
+            // composePath mutates the shared `usedPaths` set, and flipping
+            // the order would change which of a colliding pair gets the
+            // plain name and which gets a suffix. Only the WRITE moves.
+            //
+            // Nothing is linked when notes are switched off (there is no
+            // note), and `combined` never reaches this branch at all.
+            //
+            // The transcript is still written FIRST, so if the note write
+            // below then fails, the transcript names a note that does not
+            // exist yet. Obsidian renders that as an unresolved link, and
+            // the next successful sync creates the file it points at. That
+            // is the better failure: the alternative — writing the note
+            // first — would hand the note a link to a transcript that may
+            // never be written, which is the case this ordering was chosen
+            // to avoid in the first place.
+            if (settings.syncNotes) {
+              const resolvedNotePath = vault.findByWisprId(meeting.id, 'note');
+              if (resolvedNotePath) {
+                notePath = resolvedNotePath;
+                usedPaths.add(pathKey(resolvedNotePath));
+              } else {
+                notePath = composePath({
+                  baseFolder: settings.notesFolder,
+                  subfolder: settings.notesSubfolder,
+                  customSubfolder: settings.notesCustomSubfolder,
+                  filenamePattern: settings.notesFilenamePattern,
+                  meeting,
+                  used: usedPaths,
+                });
+              }
+            }
+
             try {
               await vault.write(
                 transcriptPath,
-                renderTranscript(meeting, segments, speakers, renderOpts)
+                renderTranscript(meeting, segments, speakers, {
+                  ...renderOpts,
+                  // Stripped of `.md` to match the wiki-link form the note
+                  // side already uses.
+                  noteLink: notePath
+                    ? notePath.endsWith('.md')
+                      ? notePath.slice(0, -3)
+                      : notePath
+                    : undefined,
+                })
               );
               report.transcripts++;
               wroteSomething = true;
@@ -389,20 +439,27 @@ export async function syncMeetings(deps: SyncDeps): Promise<SyncReport> {
       // written — a run with syncNotes off legitimately writes zero notes
       // even though transcripts (and the loop itself) succeeded.
       if (settings.syncNotes) {
-        // See the transcript branch above for why a resolved path must
-        // also be added to usedPaths.
-        let notePath = vault.findByWisprId(meeting.id, 'note');
-        if (notePath) {
-          usedPaths.add(pathKey(notePath));
-        } else {
-          notePath = composePath({
-            baseFolder: settings.notesFolder,
-            subfolder: settings.notesSubfolder,
-            customSubfolder: settings.notesCustomSubfolder,
-            filenamePattern: settings.notesFilenamePattern,
-            meeting,
-            used: usedPaths,
-          });
+        // Already allocated if a standalone transcript was written for this
+        // meeting (it needed the path for its back-link). Allocating again
+        // here would consume a second name from `usedPaths` and write the
+        // note somewhere the transcript does not point.
+        if (notePath === undefined) {
+          // See the transcript branch above for why a resolved path must
+          // also be added to usedPaths.
+          const resolvedNotePath = vault.findByWisprId(meeting.id, 'note');
+          if (resolvedNotePath) {
+            notePath = resolvedNotePath;
+            usedPaths.add(pathKey(resolvedNotePath));
+          } else {
+            notePath = composePath({
+              baseFolder: settings.notesFolder,
+              subfolder: settings.notesSubfolder,
+              customSubfolder: settings.notesCustomSubfolder,
+              filenamePattern: settings.notesFilenamePattern,
+              meeting,
+              used: usedPaths,
+            });
+          }
         }
         let noteContent = renderNote(meeting, speakers, { ...renderOpts, transcriptLink });
         if (combinedTranscriptBody) {

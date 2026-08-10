@@ -66,6 +66,11 @@ function makeObsidianStub() {
       (this._cmds ??= []).push(c);
     }
     addSettingTab() {}
+    /** Real Obsidian hands back an HTMLElement here. The bundle harness only
+     *  needs the two members the plugin calls. */
+    addStatusBarItem() {
+      return { setText(_t: string) {}, remove() {} };
+    }
     registerInterval(id: unknown) {
       (this._ints ??= []).push(id);
       return id;

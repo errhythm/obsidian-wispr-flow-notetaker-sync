@@ -46,6 +46,11 @@ function clampSyncIntervalSeconds(value: number): number {
 // below states this in its description instead of linking anywhere; wire
 // the real issues URL in once Stage 3 creates the repository.
 
+/** How long a finished run's result stays in the status bar. Long enough to
+ *  read after an unattended periodic sync, short enough that the bar is
+ *  empty again by the time anyone looks for it. */
+const STATUS_CLEAR_MS = 8_000;
+
 export default class WisprFlowSyncPlugin extends Plugin {
   settings: WisprSyncSettings = { ...DEFAULT_SETTINGS };
 
@@ -72,6 +77,16 @@ export default class WisprFlowSyncPlugin extends Plugin {
    *  without being annoying about it. */
   private debugLoggingUnavailableNoticeShown = false;
 
+  /** Id of the currently scheduled periodic sync, so a settings change can
+   *  cancel it and schedule a replacement. Obsidian's registerInterval only
+   *  arranges cleanup on unload; it cannot reschedule. */
+  private syncIntervalId: number | null = null;
+
+  /** Status bar element, created lazily on the first sync and removed when
+   *  idle, so a vault that never syncs carries no permanent UI. */
+  private statusBarEl: HTMLElement | null = null;
+  private statusClearTimeoutId: number | null = null;
+
   async onload(): Promise<void> {
     await this.loadSettings();
     this.addSettingTab(new WisprSyncSettingTab(this));
@@ -86,20 +101,95 @@ export default class WisprFlowSyncPlugin extends Plugin {
       callback: () => { void this.runSync({ fullSync: true }); },
     });
 
-    // registerInterval hands the id to Obsidian for cleanup on unload; it
-    // cannot be rescheduled in place. So if the user changes syncIntervalSeconds
-    // or toggles periodicSyncEnabled, the new value only takes effect once
-    // this onload() runs again (disable/re-enable the plugin, or restart
-    // Obsidian). The settings tab's description says this explicitly so the
-    // user isn't left wondering why nothing changed.
-    if (this.settings.periodicSyncEnabled) {
-      const ms = clampSyncIntervalSeconds(this.settings.syncIntervalSeconds) * 1000;
-      this.registerInterval(window.setInterval(() => { void this.runSync(); }, ms));
+    this.applySyncSchedule();
+  }
+
+  /**
+   * (Re)schedules the periodic sync from current settings. Safe to call at
+   * any time: it cancels whatever was scheduled before, so a change to the
+   * interval or to the enable toggle takes effect immediately rather than
+   * waiting for the plugin to be reloaded.
+   *
+   * `registerInterval` exists to have Obsidian clear the timer on unload,
+   * and there is no matching "unregister". Re-registering therefore leaves
+   * the superseded ids in Obsidian's cleanup list; clearing an id that has
+   * already been cleared is a documented no-op, so the cost is one dead
+   * array entry per settings change, not a running timer. The timer itself
+   * is always cancelled here first, which is what actually matters.
+   */
+  /** Public entry point for the settings tab, which must re-apply the
+   *  schedule after changing either interval setting. */
+  rescheduleSync(): void {
+    this.applySyncSchedule();
+  }
+
+  private applySyncSchedule(): void {
+    if (this.syncIntervalId !== null) {
+      window.clearInterval(this.syncIntervalId);
+      this.syncIntervalId = null;
     }
+    if (this.unloaded || !this.settings.periodicSyncEnabled) return;
+
+    const ms = clampSyncIntervalSeconds(this.settings.syncIntervalSeconds) * 1000;
+    this.syncIntervalId = window.setInterval(() => { void this.runSync(); }, ms);
+    this.registerInterval(this.syncIntervalId);
   }
 
   onunload(): void {
     this.unloaded = true;
+    if (this.syncIntervalId !== null) {
+      window.clearInterval(this.syncIntervalId);
+      this.syncIntervalId = null;
+    }
+    this.clearStatus();
+  }
+
+  /** Shows `text` in the status bar, creating the item on first use. When
+   *  `clearAfterMs` is given the item is removed again after that long, so
+   *  an idle vault shows nothing at all. */
+  private setStatus(text: string, clearAfterMs?: number): void {
+    if (this.unloaded) return;
+    // The status bar is decoration; syncing is the job. A host that does not
+    // provide the status-bar API (or throws from it) must not take down a
+    // run that is writing the user's notes — swallowing here is the whole
+    // point, not an oversight.
+    try {
+      if (this.statusClearTimeoutId !== null) {
+        window.clearTimeout(this.statusClearTimeoutId);
+        this.statusClearTimeoutId = null;
+      }
+      this.statusBarEl ??= this.addStatusBarItem();
+      this.statusBarEl.setText(text);
+      if (clearAfterMs !== undefined) {
+        this.statusClearTimeoutId = window.setTimeout(() => {
+          this.statusClearTimeoutId = null;
+          this.clearStatus();
+        }, clearAfterMs);
+      }
+    } catch {
+      // Leave whatever state it reached; clearStatus is equally guarded.
+    }
+  }
+
+  private clearStatus(): void {
+    try {
+      if (this.statusClearTimeoutId !== null) {
+        window.clearTimeout(this.statusClearTimeoutId);
+        this.statusClearTimeoutId = null;
+      }
+      this.statusBarEl?.remove();
+    } catch {
+      // See setStatus: never fatal.
+    }
+    this.statusBarEl = null;
+  }
+
+  /** A Notice the user can switch off: the routine "syncing…" and summary
+   *  messages, which are noise on a periodic sync. Failures never come
+   *  through here — see the call sites. */
+  private routineNotice(message: string, timeoutMs?: number): void {
+    if (this.unloaded || !this.settings.showSyncNotifications) return;
+    new Notice(message, timeoutMs);
   }
 
   async loadSettings(): Promise<void> {
@@ -355,7 +445,8 @@ export default class WisprFlowSyncPlugin extends Plugin {
         return;
       }
 
-      if (!this.unloaded) new Notice('Wispr Flow Sync: syncing…');
+      this.routineNotice('Wispr Flow Sync: syncing…');
+      this.setStatus('Wispr Flow: syncing…');
       try {
         // Full sync re-reads everything by treating the watermark as absent
         // for THIS RUN ONLY. `runSettings` is a shallow copy, so
@@ -404,7 +495,10 @@ export default class WisprFlowSyncPlugin extends Plugin {
           const maxNamed = 3;
           const namedFailures = uniqueFailedTitles.slice(0, maxNamed);
           const remainingFailures = uniqueFailedTitles.length - namedFailures.length;
-          new Notice(
+          // A run with problems always reports, even with notifications
+          // switched off: that setting exists to silence routine chatter,
+          // not to hide failures.
+          const summary =
             `Wispr Flow Sync: ${report.written} note(s), ${report.transcripts} transcript(s).` +
               (report.transcriptLinesSkipped > 0
                 ? ` ${report.transcriptLinesSkipped} transcript line(s) skipped.`
@@ -413,8 +507,13 @@ export default class WisprFlowSyncPlugin extends Plugin {
               (namedFailures.length
                 ? ` Failed: ${namedFailures.join(', ')}` +
                   (remainingFailures > 0 ? `, and ${remainingFailures} more.` : '.')
-                : ''),
-            10_000
+                : '');
+          if (report.errors.length) new Notice(summary, 10_000);
+          else this.routineNotice(summary, 10_000);
+          this.setStatus(
+            `Wispr Flow: ${report.written} note(s), ${report.transcripts} transcript(s)` +
+              (report.errors.length ? `, ${report.errors.length} problem(s)` : ''),
+            STATUS_CLEAR_MS
           );
         }
         // Content-free, unlike report.errors: never a title or a `.message`
@@ -438,10 +537,15 @@ export default class WisprFlowSyncPlugin extends Plugin {
         log?.('run end: sync failed');
         if (!this.unloaded) {
           new Notice(`Wispr Flow Sync failed: ${(err as Error).message}`, 10_000);
+          this.setStatus('Wispr Flow: sync failed', STATUS_CLEAR_MS);
         }
       }
     } finally {
       this.syncInProgress = false;
+      // Never leave "syncing…" on screen: every path that finishes a run
+      // either replaced it with a result above or is returning early, and a
+      // stuck spinner is worse than no status at all.
+      if (this.statusClearTimeoutId === null) this.clearStatus();
     }
   }
 }
@@ -498,6 +602,11 @@ class WisprSyncSettingTab extends PluginSettingTab {
 
     settings[key] = next;
     await this.plugin.persist();
+    // Rescheduling here is what makes the interval settings take effect
+    // without a plugin reload.
+    if (key === 'periodicSyncEnabled' || key === 'syncIntervalSeconds') {
+      this.plugin.rescheduleSync();
+    }
     // Several rows gate on another row's value. The imperative tab re-ran
     // display() for that; refreshDomState re-evaluates every `disabled`
     // predicate below in place, without rebuilding the tab.
@@ -517,23 +626,26 @@ class WisprSyncSettingTab extends PluginSettingTab {
         items: [
           {
             name: 'Enable periodic sync',
-            desc:
-              'Automatically run "Sync now" on a timer. Takes effect after Obsidian reloads this ' +
-              'plugin (toggle it off/on in Community plugins, or restart Obsidian) — an interval ' +
-              'already scheduled cannot be rescheduled in place.',
+            desc: 'Automatically run "Sync now" on a timer.',
             control: { type: 'toggle', key: 'periodicSyncEnabled' },
           },
           {
             name: 'Sync interval',
-            desc:
-              'Seconds between automatic syncs. Minimum 60, maximum 86400 (24 hours). Takes effect ' +
-              'after Obsidian reloads the plugin.',
+            desc: 'Seconds between automatic syncs. Minimum 60, maximum 86400 (24 hours).',
             control: {
               type: 'number',
               key: 'syncIntervalSeconds',
               min: MIN_SYNC_INTERVAL_SECONDS,
               max: MAX_SYNC_INTERVAL_SECONDS,
             },
+          },
+          {
+            name: 'Show sync notifications',
+            desc:
+              'Show a notice when a sync starts and finishes. Turn this off to keep periodic ' +
+              'syncs quiet — a sync that hit problems still reports, and the status bar is ' +
+              'unaffected either way.',
+            control: { type: 'toggle', key: 'showSyncNotifications' },
           },
         ],
       },

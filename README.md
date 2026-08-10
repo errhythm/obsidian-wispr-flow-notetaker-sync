@@ -6,7 +6,7 @@ Sync Wispr Flow meeting notes and transcripts into your vault. Reads local files
 
 ## What it does
 
-The plugin reads meeting notes and transcripts that Wispr Flow's desktop app has already recorded locally — including those still sitting in the database's write-ahead log, which is where a running Wispr Flow keeps most recent meetings — and writes them into your vault as Markdown — one note per meeting, with YAML frontmatter carrying a `wispr_id` field, and optionally a companion transcript file. It does not talk to Wispr Flow, does not use any Wispr Flow API (none exists locally), and does not modify anything Wispr Flow owns.
+The plugin reads meeting notes and transcripts that Wispr Flow's desktop app has already recorded locally — including those still sitting in the database's write-ahead log, which is where a running Wispr Flow keeps most recent meetings — and writes them into your vault as Markdown — one note per meeting, with YAML frontmatter carrying a `wispr_id` field, and optionally a companion transcript file that links back to its note. It does not talk to Wispr Flow, does not use any Wispr Flow API (none exists locally), and does not modify anything Wispr Flow owns.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ By default, notes are written to `Meetings/Wispr` in your vault, with transcript
 
 | Group | What it controls |
 |---|---|
-| Sync | Whether to run automatically on an interval, and how often. |
+| Sync | Whether to run automatically on an interval, how often, and whether routine sync notices are shown. Interval changes take effect immediately — no plugin reload. |
 | Notes | Whether to write notes at all, the destination folder, subfolder layout, and filename pattern. |
 | Transcripts | Whether to write transcripts, where (same folder as the note, a separate location, or combined into the note), and which transcript source (`refined` or `live`) to prefer. |
 | Filtering | How far back to sync (in days, 0 = unlimited), an optional title keyword filter, and whether to include unfinalized meetings. |
@@ -91,7 +91,6 @@ Issues and pull requests: `https://github.com/madforstrength/obsidian-wispr-flow
 ## Known limitations
 
 - **Existing notes are never relocated or renamed** when you change folder or filename settings. The new settings apply only to meetings synced from that point on.
-- **Changing the sync interval requires reloading the plugin** (disable/enable, or restart Obsidian). Obsidian's interval registration cannot be rescheduled in place once set.
 - **A title made almost entirely of emoji can lose its trailing date** in the generated filename. The filename length limit is enforced in UTF-8 bytes, and emoji are multi-byte, so a very emoji-heavy title can consume the whole budget before the date suffix is appended. This only affects unusually emoji-dense titles.
 - **Wispr Flow's database schema is undocumented** and its Notetaker feature is relatively new, so a future Wispr Flow update could change the schema in a way that breaks syncing. The plugin checks for the columns it depends on and reports one clear error message if they're missing, rather than failing with an obscure SQL error.
 - **The debug log has no size cap or rotation.** If you enable debug logging and leave it on indefinitely, the log file will grow without bound. Turn it off when you're done troubleshooting, or delete the file periodically.
