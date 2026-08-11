@@ -570,7 +570,12 @@ const BLANK_RESTORES_DEFAULT = new Set<string>([
   'transcriptFilenamePattern',
 ]);
 
-class WisprSyncSettingTab extends PluginSettingTab {
+/** Settings whose value decides whether OTHER settings are rendered. A write
+ *  to any of these re-renders the tab; everything else takes the cheap
+ *  in-place path. Keep in sync with the `visible` predicates below. */
+const VISIBILITY_KEYS = new Set(['syncTranscripts', 'transcriptHandling', 'transcriptsSubfolder']);
+
+export class WisprSyncSettingTab extends PluginSettingTab {
   constructor(private plugin: WisprFlowSyncPlugin) {
     super(plugin.app, plugin);
   }
@@ -610,14 +615,33 @@ class WisprSyncSettingTab extends PluginSettingTab {
     // Several rows gate on another row's value. The imperative tab re-ran
     // display() for that; refreshDomState re-evaluates every `disabled`
     // predicate below in place, without rebuilding the tab.
-    this.refreshDomState();
+    //
+    // `visible` is different: it decides whether an item is rendered at all,
+    // and Obsidian only evaluates it during a render. refreshDomState
+    // deliberately does not re-render ("toggles CSS state in place"), so a
+    // key that other rows' `visible` predicates read has to go through
+    // update() instead, or those rows stay on screen after they stop
+    // applying — which is the whole point of hiding them.
+    if (VISIBILITY_KEYS.has(key)) this.update();
+    else this.refreshDomState();
   }
 
   getSettingDefinitions(): SettingDefinitionItem[] {
     const s = this.plugin.settings;
     const transcriptsOff = (): boolean => !s.syncTranscripts;
-    const transcriptsFolderOff = (): boolean =>
-      !s.syncTranscripts || s.transcriptHandling !== 'custom-location';
+    // `combined` appends the transcript into the note itself, so there is no
+    // second file: nothing to place, and nothing to name. `same-location`
+    // borrows the NOTES folder and subfolder (see composePath in the engine)
+    // but keeps its own filename pattern. So placement is a custom-location
+    // concern only, while naming applies to both file-producing modes.
+    //
+    // These drive `visible`, not `disabled`: a greyed-out control still asks
+    // the reader to work out why it does not apply. One that cannot apply is
+    // better not shown.
+    const transcriptFileIsPlaceable = (): boolean =>
+      s.syncTranscripts && s.transcriptHandling === 'custom-location';
+    const transcriptFileIsNameable = (): boolean =>
+      s.syncTranscripts && s.transcriptHandling !== 'combined';
 
     return [
       {
@@ -746,39 +770,36 @@ class WisprSyncSettingTab extends PluginSettingTab {
           {
             name: 'Transcripts folder',
             desc:
-              'Only used when transcript handling above is "Custom location". Applies to newly-' +
-              'synced meetings — existing transcripts are not moved when this changes.',
-            control: { type: 'text', key: 'transcriptsFolder', disabled: transcriptsFolderOff },
+              'Applies to newly-synced meetings — existing transcripts are not moved when this ' +
+              'changes.',
+            visible: transcriptFileIsPlaceable,
+            control: { type: 'text', key: 'transcriptsFolder' },
           },
           {
             name: 'Transcripts subfolder organization',
             desc:
-              'Only used when transcript handling above is "Custom location". Applies to newly-' +
-              'synced meetings — existing transcripts are not moved when this changes.',
+              'Applies to newly-synced meetings — existing transcripts are not moved when this ' +
+              'changes.',
+            visible: transcriptFileIsPlaceable,
             control: {
               type: 'dropdown',
               key: 'transcriptsSubfolder',
               options: SUBFOLDER_OPTIONS,
-              disabled: transcriptsFolderOff,
             },
           },
           {
             name: 'Transcripts custom subfolder pattern',
-            desc:
-              'Only used when transcript handling is "Custom location" and subfolder organization ' +
-              'above is "Custom pattern".',
-            control: {
-              type: 'text',
-              key: 'transcriptsCustomSubfolder',
-              disabled: () => transcriptsFolderOff() || s.transcriptsSubfolder !== 'custom',
-            },
+            desc: 'Used when subfolder organization above is "Custom pattern".',
+            visible: () => transcriptFileIsPlaceable() && s.transcriptsSubfolder === 'custom',
+            control: { type: 'text', key: 'transcriptsCustomSubfolder' },
           },
           {
             name: 'Transcript filename pattern',
             desc:
               'Tokens: {title} {date} {time} {year} {month} {day} {quarter}. Applies to newly-' +
               'synced meetings — existing transcripts are not renamed when this changes.',
-            control: { type: 'text', key: 'transcriptFilenamePattern', disabled: transcriptsOff },
+            visible: transcriptFileIsNameable,
+            control: { type: 'text', key: 'transcriptFilenamePattern' },
           },
         ],
       },

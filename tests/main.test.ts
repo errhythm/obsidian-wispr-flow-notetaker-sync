@@ -79,6 +79,8 @@ Object.defineProperty(globalThis, 'navigator', {
 interface StubStatusBarItem { text: string; removed: boolean; setText(t: string): void; remove(): void }
 const statusBarItems: StubStatusBarItem[] = [];
 const statusBarTexts: string[] = [];
+/** Records which re-render path the settings tab took after each write. */
+const tabRenders: string[] = [];
 
 vi.mock('obsidian', () => {
   class Notice {
@@ -130,6 +132,16 @@ vi.mock('obsidian', () => {
   }
   class PluginSettingTab {
     constructor(_app?: unknown, _plugin?: unknown) {}
+    /** Obsidian re-stores the definitions and re-renders. `visible`
+     *  predicates are only evaluated during a render, so this is the call
+     *  that makes a row appear or disappear. */
+    update(): void {
+      tabRenders.push('update');
+    }
+    /** Cheap CSS-only pass: re-evaluates `disabled`, never `visible`. */
+    refreshDomState(): void {
+      tabRenders.push('refreshDomState');
+    }
   }
   class Setting {
     setName() { return this; }
@@ -194,7 +206,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-const { default: WisprFlowSyncPlugin } = await import('../src/main');
+const { default: WisprFlowSyncPlugin, WisprSyncSettingTab } = await import('../src/main');
 
 function makePlugin(manifest: { dir?: string } = { dir: '/fake/plugin-dir' }): InstanceType<typeof WisprFlowSyncPlugin> {
   const app = {
@@ -248,6 +260,7 @@ beforeEach(() => {
   pendingTimeouts.length = 0;
   statusBarItems.length = 0;
   statusBarTexts.length = 0;
+  tabRenders.length = 0;
   loadDataResult = {};
   locateWisprImpl = () =>
     Promise.resolve({
@@ -953,5 +966,122 @@ describe('sync notification toggle', () => {
     await plugin.runSync();
     expect(notices.some((n) => n.includes('syncing…'))).toBe(true);
     expect(notices.some((n) => n.includes('note(s)'))).toBe(true);
+  });
+});
+
+
+// --- Settings visibility ----------------------------------------------------
+
+/** Flattens the nested group/item definition tree into `name -> definition`. */
+function settingsByName(
+  tab: { getSettingDefinitions(): unknown[] }
+): Map<string, { name: string; visible?: boolean | (() => boolean) }> {
+  const out = new Map<string, { name: string; visible?: boolean | (() => boolean) }>();
+  const walk = (items: unknown[]): void => {
+    for (const raw of items) {
+      const item = raw as { name?: string; items?: unknown[] };
+      if (Array.isArray(item.items)) walk(item.items);
+      if (typeof item.name === 'string') {
+        out.set(item.name, item as { name: string; visible?: boolean | (() => boolean) });
+      }
+    }
+  };
+  walk(tab.getSettingDefinitions());
+  return out;
+}
+
+function isVisible(def: { visible?: boolean | (() => boolean) } | undefined): boolean {
+  if (!def) throw new Error('setting not found');
+  if (def.visible === undefined) return true; // Obsidian's default
+  return typeof def.visible === 'function' ? def.visible() : def.visible;
+}
+
+const PLACEMENT_SETTINGS = [
+  'Transcripts folder',
+  'Transcripts subfolder organization',
+];
+const NAMING_SETTING = 'Transcript filename pattern';
+
+describe('transcript settings visibility', () => {
+  async function tabWith(over: Partial<WisprSyncSettings>) {
+    const plugin = await loadPlugin(over);
+    return new WisprSyncSettingTab(plugin);
+  }
+
+  it('hides placement AND naming settings when the transcript is combined into the note', async () => {
+    // The reported problem: `combined` writes no second file, so there is
+    // nothing to place and nothing to name, yet every one of these rows was
+    // still on screen — the filename pattern was not even greyed out.
+    const defs = settingsByName(
+      await tabWith({ syncTranscripts: true, transcriptHandling: 'combined' })
+    );
+    for (const name of [...PLACEMENT_SETTINGS, NAMING_SETTING, 'Transcripts custom subfolder pattern']) {
+      expect(isVisible(defs.get(name)), `${name} should be hidden`).toBe(false);
+    }
+  });
+
+  it('keeps the naming setting for "same location", which still writes a file', async () => {
+    const defs = settingsByName(
+      await tabWith({ syncTranscripts: true, transcriptHandling: 'same-location' })
+    );
+    // Placement comes from the NOTES folder in this mode, so those stay hidden…
+    for (const name of PLACEMENT_SETTINGS) {
+      expect(isVisible(defs.get(name)), `${name} should be hidden`).toBe(false);
+    }
+    // …but the transcript keeps its own filename pattern.
+    expect(isVisible(defs.get(NAMING_SETTING))).toBe(true);
+  });
+
+  it('shows everything for "custom location"', async () => {
+    const defs = settingsByName(
+      await tabWith({ syncTranscripts: true, transcriptHandling: 'custom-location' })
+    );
+    for (const name of [...PLACEMENT_SETTINGS, NAMING_SETTING]) {
+      expect(isVisible(defs.get(name)), `${name} should be visible`).toBe(true);
+    }
+  });
+
+  it('shows the custom subfolder pattern only when subfolder organization is "custom"', async () => {
+    const off = settingsByName(
+      await tabWith({
+        syncTranscripts: true,
+        transcriptHandling: 'custom-location',
+        transcriptsSubfolder: 'month',
+      })
+    );
+    expect(isVisible(off.get('Transcripts custom subfolder pattern'))).toBe(false);
+
+    const on = settingsByName(
+      await tabWith({
+        syncTranscripts: true,
+        transcriptHandling: 'custom-location',
+        transcriptsSubfolder: 'custom',
+      })
+    );
+    expect(isVisible(on.get('Transcripts custom subfolder pattern'))).toBe(true);
+  });
+
+  it('hides every transcript file setting when transcripts are switched off', async () => {
+    const defs = settingsByName(
+      await tabWith({ syncTranscripts: false, transcriptHandling: 'custom-location' })
+    );
+    for (const name of [...PLACEMENT_SETTINGS, NAMING_SETTING]) {
+      expect(isVisible(defs.get(name)), `${name} should be hidden`).toBe(false);
+    }
+  });
+
+  it('re-renders after a change that other rows gate on, and not otherwise', async () => {
+    const plugin = await loadPlugin({ syncTranscripts: true });
+    const tab = new WisprSyncSettingTab(plugin);
+
+    // refreshDomState only toggles CSS — it never re-evaluates `visible`, so
+    // a change to a gating key must take the update() path or the stale rows
+    // stay on screen.
+    await tab.setControlValue('transcriptHandling', 'combined');
+    expect(tabRenders).toEqual(['update']);
+
+    tabRenders.length = 0;
+    await tab.setControlValue('transcriptFilenamePattern', '{title}');
+    expect(tabRenders).toEqual(['refreshDomState']);
   });
 });
