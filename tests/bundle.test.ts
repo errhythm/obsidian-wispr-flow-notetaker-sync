@@ -210,7 +210,7 @@ describe('built bundle (main.js)', () => {
       },
       metadataCache: { getFileCache: () => null },
     };
-    const manifest = { id: 'wispr-flow-sync', dir: '.obsidian/plugins/wispr-flow-sync' };
+    const manifest = { id: 'wispr-flow-notetaker-sync', dir: '.obsidian/plugins/wispr-flow-notetaker-sync' };
 
     const plugin = new PluginCtor(app, manifest);
     expect(plugin).toBeTruthy();
@@ -242,7 +242,7 @@ describe('built bundle (main.js)', () => {
         },
         metadataCache: { getFileCache: () => null },
       };
-      const manifest = { id: 'wispr-flow-sync', dir: '.obsidian/plugins/wispr-flow-sync' };
+      const manifest = { id: 'wispr-flow-notetaker-sync', dir: '.obsidian/plugins/wispr-flow-notetaker-sync' };
 
       const plugin = new PluginCtor(app, manifest);
       // Turn on the plugin's own debug logging sink so `run end: ...` and

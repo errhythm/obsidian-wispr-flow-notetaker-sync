@@ -1,12 +1,28 @@
-# Wispr Flow Sync
+# Wispr Flow Notetaker Sync
 
-Sync Wispr Flow meeting notes and transcripts into your vault. Reads local files only and never connects to the network.
+Sync Wispr Flow Notetaker meeting notes and transcripts into your vault. Reads local files only and never connects to the network.
 
-> **Unofficial.** This plugin is not affiliated with, endorsed by, or sponsored by Wispr AI. "Wispr Flow" is a trademark of its owner. This plugin uses no Wispr logo or icon.
+> **Derived work.** This is a standalone plugin derived from [madforstrength/obsidian-wispr-flow-sync](https://github.com/madforstrength/obsidian-wispr-flow-sync) (MIT), built on its 0.1.3. It carries a fix for the plugin reading none of your meetings on a live install, plus several additions — see [What this adds](#what-this-adds). It ships under its own plugin id, so it installs alongside the original rather than replacing it. Maintained independently.
+
+> **Unofficial.** This plugin is not affiliated with, endorsed by, or sponsored by Wispr AI. "Wispr Flow" and "Notetaker" are used only to name the application this plugin reads from. Trademarks belong to their owner. This plugin uses no Wispr logo or icon.
 
 ## What it does
 
 The plugin reads meeting notes and transcripts that Wispr Flow's desktop app has already recorded locally — including those still sitting in the database's write-ahead log, which is where a running Wispr Flow keeps most recent meetings — and writes them into your vault as Markdown — one note per meeting, with YAML frontmatter carrying a `wispr_id` field, and optionally a companion transcript file that links back to its note. It does not talk to Wispr Flow, does not use any Wispr Flow API (none exists locally), and does not modify anything Wispr Flow owns.
+
+## What this adds
+
+**Reads the write-ahead log.** The reason this fork exists. `flow.sqlite` is opened with `immutable=1`, which is forced — the VFS implements no `xShmMap`, and SQLite will not open a WAL-mode database read-write without shared memory. But `immutable=1` also makes SQLite ignore the `-wal` file, and Wispr Flow holds its connection open for as long as the app runs, so the write-ahead log routinely holds days of meetings. On a real install with 30 meetings, upstream 0.1.3 synced **zero, silently** — the schema pages are in the main file, so nothing errored. This fork parses the WAL and overlays it, keeping `immutable=1`, read-only access and lazy paging intact.
+
+**Sync interval applies immediately**, with no plugin reload.
+
+**Transcripts link back to their note** via a `note:` field in frontmatter.
+
+**Status bar and a notification toggle.** Progress and result in the status bar; routine notices can be silenced without hiding failures.
+
+**Transcript settings that cannot apply are hidden** rather than greyed out.
+
+**A `both` transcript source**, writing the refined and live passes into one file under separate headings.
 
 ## Requirements
 
@@ -16,9 +32,19 @@ The plugin reads meeting notes and transcripts that Wispr Flow's desktop app has
 
 ## Installation
 
-**From the community plugin browser** (once listed): search for "Wispr Flow Sync" in Obsidian's Community Plugins browser, install, and enable.
+This fork is not in the community plugin browser. Install it by hand:
 
-**Manual install**: copy `main.js` and `manifest.json` into `<your-vault>/.obsidian/plugins/wispr-flow-sync/`, then enable "Wispr Flow Sync" under Settings → Community plugins.
+**Manual install**: copy `main.js` and `manifest.json` into `<your-vault>/.obsidian/plugins/wispr-flow-notetaker-sync/`, then enable "Wispr Flow Notetaker Sync" under Settings → Community plugins.
+
+**From a release, with the GitHub CLI:**
+
+```bash
+VAULT="$HOME/path/to/YourVault"
+mkdir -p "$VAULT/.obsidian/plugins/wispr-flow-notetaker-sync" && \
+gh release download --repo errhythm/obsidian-wispr-flow-notetaker-sync \
+  --pattern 'main.js' --pattern 'manifest.json' --clobber \
+  --dir "$VAULT/.obsidian/plugins/wispr-flow-notetaker-sync"
+```
 
 ## Usage
 
@@ -35,7 +61,7 @@ By default, notes are written to `Meetings/Wispr` in your vault, with transcript
 |---|---|
 | Sync | Whether to run automatically on an interval, how often, and whether routine sync notices are shown. Interval changes take effect immediately — no plugin reload. |
 | Notes | Whether to write notes at all, the destination folder, subfolder layout, and filename pattern. |
-| Transcripts | Whether to write transcripts, where (same folder as the note, a separate location, or combined into the note), and which transcript source (`refined` or `live`) to prefer. |
+| Transcripts | Whether to write transcripts, where (same folder as the note, a separate location, or combined into the note), and which transcript source to write (`refined`, `live`, or both in one file). |
 | Filtering | How far back to sync (in days, 0 = unlimited), an optional title keyword filter, and whether to include unfinalized meetings. |
 | Advanced | An override for Wispr Flow's data folder location, for non-default installs. |
 | Debugging | An optional debug log and a button to copy it to the clipboard for troubleshooting. |
@@ -82,7 +108,9 @@ npm test
 npm run build
 ```
 
-Issues and pull requests: `https://github.com/madforstrength/obsidian-wispr-flow-sync`.
+Issues and pull requests: `https://github.com/errhythm/obsidian-wispr-flow-notetaker-sync`.
+
+Original project: `https://github.com/madforstrength/obsidian-wispr-flow-sync`.
 
 ## License
 

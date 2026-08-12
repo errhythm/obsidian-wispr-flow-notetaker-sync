@@ -20,7 +20,7 @@ import type { SubfolderPattern } from './render/paths';
  *  never anywhere outside the plugin folder. Shared between the sink
  *  (debugLogPath) and the settings tab's "Copy logs" button so both agree on
  *  exactly one location. */
-const DEBUG_LOG_FILENAME = 'wispr-flow-sync-debug.log';
+const DEBUG_LOG_FILENAME = 'wispr-flow-notetaker-sync-debug.log';
 
 /** Floor and ceiling for `syncIntervalSeconds`, enforced everywhere the
  *  setting is read OR written. `window.setInterval`'s delay argument is
@@ -203,7 +203,7 @@ export default class WisprFlowSyncPlugin extends Plugin {
       const stored = (await this.loadData()) as Partial<WisprSyncSettings> | null;
       this.settings = Object.assign({}, DEFAULT_SETTINGS, stored ?? {});
     } catch (err) {
-      console.error('[wispr-flow-sync] failed to load settings, using defaults', err);
+      console.error('[wispr-flow-notetaker-sync] failed to load settings, using defaults', err);
       this.settings = { ...DEFAULT_SETTINGS };
       new Notice('Wispr Flow Sync: could not load settings; using defaults.', 10_000);
     }
@@ -225,7 +225,7 @@ export default class WisprFlowSyncPlugin extends Plugin {
     try {
       await this.saveSettings();
     } catch (err) {
-      console.error('[wispr-flow-sync] failed to save settings', err);
+      console.error('[wispr-flow-notetaker-sync] failed to save settings', err);
       new Notice('Wispr Flow Sync: could not save that setting.', 10_000);
     }
   }
@@ -384,7 +384,7 @@ export default class WisprFlowSyncPlugin extends Plugin {
    *  through to syncMeetings without a branch.
    *
    *  `manifest.dir` is OPTIONAL per Obsidian's own typing. Without it, the
-   *  log path becomes the literal string `"undefined/wispr-flow-sync-debug.log"`
+   *  log path becomes the literal string `"undefined/wispr-flow-notetaker-sync-debug.log"`
    *  and every append fails ENOENT — silently, since the write is fire-
    *  and-forget (see below). Rather than build a sink that pretends to work
    *  while doing nothing, return undefined here too, and tell the user once
@@ -525,7 +525,7 @@ export default class WisprFlowSyncPlugin extends Plugin {
         // that can leave the user's machine. See sync/engine.ts's errorKind
         // doc comment for the full reasoning.
         for (const d of (report.errorDetails ?? []).slice(0, 3)) {
-          console.error('[wispr-flow-sync] error', { id: d.id, kind: d.kind, errorKind: d.errorKind });
+          console.error('[wispr-flow-notetaker-sync] error', { id: d.id, kind: d.kind, errorKind: d.errorKind });
         }
       } catch (err) {
         // Must never escape: an unhandled rejection here would surface as an
@@ -533,7 +533,7 @@ export default class WisprFlowSyncPlugin extends Plugin {
         // constructor name to console — an unexpected exception's message
         // could embed a path or a title (see errorKind's doc comment in
         // sync/engine.ts for why that's not console-safe).
-        console.error('[wispr-flow-sync] sync failed', (err as Error)?.constructor?.name ?? 'Error');
+        console.error('[wispr-flow-notetaker-sync] sync failed', (err as Error)?.constructor?.name ?? 'Error');
         log?.('run end: sync failed');
         if (!this.unloaded) {
           new Notice(`Wispr Flow Sync failed: ${(err as Error).message}`, 10_000);
@@ -930,7 +930,7 @@ export class WisprSyncSettingTab extends PluginSettingTab {
       await navigator.clipboard.writeText(JSON.stringify(this.plugin.settings, null, 2));
       new Notice('Wispr Flow Sync: settings copied to clipboard.');
     } catch (err) {
-      console.error('[wispr-flow-sync] failed to export settings', err);
+      console.error('[wispr-flow-notetaker-sync] failed to export settings', err);
       new Notice('Wispr Flow Sync: could not copy settings to clipboard.');
     }
   }

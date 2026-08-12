@@ -525,7 +525,7 @@ describe('Task 8: commands, periodic sync, full sync, debug log', () => {
   it('writes a debug log when debug logging is enabled', async () => {
     const p = await loadPlugin({ enableDebugLogging: true });
     await p.runSync();
-    expect(adapterWrites.some((w) => w.path.includes('wispr-flow-sync-debug.log'))).toBe(true);
+    expect(adapterWrites.some((w) => w.path.includes('wispr-flow-notetaker-sync-debug.log'))).toBe(true);
   });
 });
 

@@ -39,7 +39,7 @@ jobs:
 
       # Attests the exact main.js that ships below, so anyone can verify it was
       # built by this workflow from this repo:
-      #   gh attestation verify main.js --repo madforstrength/obsidian-wispr-flow-sync
+      #   gh attestation verify main.js --repo errhythm/obsidian-wispr-flow-notetaker-sync
       # Runs after the tag guard so a mismatched tag never produces one, and
       # before the upload so an unattested asset is never published.
       - name: Attest build provenance for main.js
