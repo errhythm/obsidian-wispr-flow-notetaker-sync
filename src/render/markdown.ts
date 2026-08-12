@@ -325,3 +325,49 @@ export function renderTranscript(
   if (body) parts.push(body, '');
   return parts.join('\n');
 }
+
+/** One transcript per entry, rendered under its own `## ` heading.
+ *
+ *  Used for the `both` source, which keeps Wispr's refined and live passes in
+ *  a SINGLE file rather than two. They transcribe the same speech, so two
+ *  files would double every search hit while adding no content; and a second
+ *  file would need a second path allocation, a second back-link, and its own
+ *  answer to "which one does the note point at".
+ *
+ *  An entry with no segments is dropped rather than rendered as an empty
+ *  heading — Wispr writes `live.ndjson` and `refined.ndjson` at different
+ *  points, so one can legitimately be missing or still empty while the other
+ *  is complete. */
+export function renderMultiTranscript(
+  meeting: MeetingRow,
+  entries: Array<{ label: string; segments: TranscriptSegment[] }>,
+  speakers: Map<number, string>,
+  opts: RenderOptions
+): string {
+  const parts = [frontmatter(meeting, speakers, 'transcript', opts.noteLink)];
+  for (const entry of entries) {
+    const body = renderTranscriptBody(entry.segments, speakers, opts);
+    if (!body) continue;
+    parts.push(`## ${entry.label}`, '', body, '');
+  }
+  return parts.join('\n');
+}
+
+/** The `both` bodies for `combined` mode, which appends into the meeting note
+ *  under its own `## Transcript` heading. Uses `### ` so the two passes nest
+ *  UNDER that heading rather than becoming siblings of it — otherwise the
+ *  note's outline would show "Transcript", "Refined", "Live" as three peers
+ *  and folding "Transcript" would leave both bodies behind. */
+export function renderMultiTranscriptBody(
+  entries: Array<{ label: string; segments: TranscriptSegment[] }>,
+  speakers: Map<number, string>,
+  opts: RenderOptions
+): string {
+  const parts: string[] = [];
+  for (const entry of entries) {
+    const body = renderTranscriptBody(entry.segments, speakers, opts);
+    if (!body) continue;
+    parts.push(`### ${entry.label}`, '', body, '');
+  }
+  return parts.join('\n').trimEnd();
+}

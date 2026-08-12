@@ -427,6 +427,133 @@ describe('syncMeetings', () => {
     return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
   }
 
+  /** Both passes present, with distinguishable text so a test can tell which
+   *  one (or both) reached the file. Mirrors reality: Wispr writes
+   *  refined.ndjson and live.ndjson side by side for the same meeting. */
+  function withBothTranscriptFixture(meetingId: string): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), 'wispr-engine-both-'));
+    mkdirSync(join(dir, meetingId), { recursive: true });
+    writeFileSync(
+      join(dir, meetingId, 'refined.ndjson'),
+      [JSON.stringify({ timestamp: '00:00', text: 'REFINED-TEXT', speaker: { id: 0 } })].join('\n')
+    );
+    writeFileSync(
+      join(dir, meetingId, 'live.ndjson'),
+      [JSON.stringify({ timestamp: '00:00', text: 'LIVE-TEXT', speaker: { id: 0 } })].join('\n')
+    );
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  async function syncWith(
+    meetingId: string,
+    dir: string,
+    over: Partial<typeof DEFAULT_SETTINGS>
+  ) {
+    const v = fakeVault();
+    await syncMeetings({
+      vault: v.adapter,
+      settings: { ...DEFAULT_SETTINGS, syncNotes: true, syncTranscripts: true, ...over },
+      databasePath: DB,
+      meetingsDir: dir,
+      openDatabase: fakeOpenDatabase([meeting({ id: meetingId, title: 'Sources' })]),
+    });
+    return v;
+  }
+
+  describe('transcriptSource: both', () => {
+    it('writes ONE file carrying each pass under its own heading', async () => {
+      const id = 'm-src-both';
+      const { dir, cleanup } = withBothTranscriptFixture(id);
+      try {
+        const v = await syncWith(id, dir, { transcriptSource: 'both' });
+        // One note + one transcript. Two transcript files would double every
+        // search hit and leave the note's single back-link ambiguous.
+        expect(v.files.size).toBe(2);
+        const t = v.files.get(v.byId.get(`${id}:transcript`)!)!;
+        expect(t).toContain('## Refined');
+        expect(t).toContain('## Live');
+        expect(t).toContain('REFINED-TEXT');
+        expect(t).toContain('LIVE-TEXT');
+        // Refined first: it is the one to read, live is the check against it.
+        expect(t.indexOf('## Refined')).toBeLessThan(t.indexOf('## Live'));
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('writes only the chosen pass for a single source, with no headings', async () => {
+      const id = 'm-src-one';
+      const { dir, cleanup } = withBothTranscriptFixture(id);
+      try {
+        const refined = await syncWith(id, dir, { transcriptSource: 'refined' });
+        const rt = refined.files.get(refined.byId.get(`${id}:transcript`)!)!;
+        expect(rt).toContain('REFINED-TEXT');
+        expect(rt).not.toContain('LIVE-TEXT');
+        // Byte-for-byte unchanged from before `both` existed: adding a
+        // heading here would rewrite every transcript already in the vault
+        // on the next sync.
+        expect(rt).not.toContain('## Refined');
+
+        const live = await syncWith(id, dir, { transcriptSource: 'live' });
+        const lt = live.files.get(live.byId.get(`${id}:transcript`)!)!;
+        expect(lt).toContain('LIVE-TEXT');
+        expect(lt).not.toContain('REFINED-TEXT');
+        expect(lt).not.toContain('## Live');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('nests both passes under the note\'s "## Transcript" heading in combined mode', async () => {
+      const id = 'm-src-combined';
+      const { dir, cleanup } = withBothTranscriptFixture(id);
+      try {
+        const v = await syncWith(id, dir, {
+          transcriptSource: 'both',
+          transcriptHandling: 'combined',
+        });
+        expect(v.files.size).toBe(1); // combined has no second file
+        const note = v.files.get(v.byId.get(`${id}:note`)!)!;
+        expect(note).toContain('## Transcript');
+        // h3, not h2: otherwise Refined/Live become siblings of "Transcript"
+        // and folding it would leave both bodies behind.
+        expect(note).toContain('### Refined');
+        expect(note).toContain('### Live');
+        expect(note).toContain('REFINED-TEXT');
+        expect(note).toContain('LIVE-TEXT');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('emits no empty heading when one pass is missing', async () => {
+      // Wispr writes the two files at different points, so one can be absent
+      // or still empty while the other is complete.
+      const id = 'm-src-partial';
+      const { dir, cleanup } = withTranscriptFixture(id); // refined only
+      try {
+        const v = await syncWith(id, dir, { transcriptSource: 'both' });
+        const t = v.files.get(v.byId.get(`${id}:transcript`)!)!;
+        expect(t).toContain('## Refined');
+        expect(t).not.toContain('## Live');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('writes nothing when both passes are missing', async () => {
+      const id = 'm-src-none';
+      const dir = mkdtempSync(join(tmpdir(), 'wispr-engine-empty-'));
+      try {
+        const v = await syncWith(id, dir, { transcriptSource: 'both' });
+        expect(v.byId.get(`${id}:transcript`)).toBeUndefined();
+        expect(v.files.size).toBe(1); // the note only
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('syncNotes: true, syncTranscripts: true -> writes both the note and the transcript', async () => {
     const meetingId = 'm-matrix-both';
     const { dir, cleanup } = withTranscriptFixture(meetingId);

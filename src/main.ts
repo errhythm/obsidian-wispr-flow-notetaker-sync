@@ -743,11 +743,14 @@ export class WisprSyncSettingTab extends PluginSettingTab {
           },
           {
             name: 'Transcript source',
-            desc: 'Refined is cleaner and diarized. Live is the real-time version.',
+            desc:
+              'Refined is cleaner and diarized. Live is the real-time version. Both writes one ' +
+              'file containing each under its own heading — useful for checking the refined pass ' +
+              'against the raw one, at roughly double the length.',
             control: {
               type: 'dropdown',
               key: 'transcriptSource',
-              options: { refined: 'Refined', live: 'Live' },
+              options: { refined: 'Refined', live: 'Live', both: 'Both (refined + live)' },
               disabled: transcriptsOff,
             },
           },

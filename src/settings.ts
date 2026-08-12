@@ -28,7 +28,13 @@ export interface WisprSyncSettings {
   transcriptsSubfolder: SubfolderPattern;
   transcriptsCustomSubfolder: string;
   transcriptFilenamePattern: string;
-  transcriptSource: 'refined' | 'live';
+  /** Which transcript Wispr produced to write. `both` writes ONE file
+   *  carrying each under its own heading — the two are near-duplicates of
+   *  the same speech (measured: 29.6k vs 28.0k characters for one 40-minute
+   *  meeting), so two separate files would double every search hit for no
+   *  extra content. Useful when the refined pass has dropped or reworded
+   *  something and you want the raw pass to check against. */
+  transcriptSource: 'refined' | 'live' | 'both';
 
   // --- Rendering ---
   resolveSpeakerNames: boolean;

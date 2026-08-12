@@ -1,10 +1,17 @@
-import type { MeetingRow } from '../types';
+import type { MeetingRow, TranscriptSegment } from '../types';
 import type { WisprSyncSettings } from '../settings';
 import type { WisprDb } from '../wispr/db';
 import { listMeetings, probeSchema } from '../wispr/repository';
 import { readTranscript } from '../wispr/transcript';
 import { resolveSpeakers } from '../wispr/speakers';
-import { renderNote, renderTranscript, renderTranscriptBody, wisprDateToEpoch } from '../render/markdown';
+import {
+  renderNote,
+  renderTranscript,
+  renderTranscriptBody,
+  renderMultiTranscript,
+  renderMultiTranscriptBody,
+  wisprDateToEpoch,
+} from '../render/markdown';
 import { composePath, pathKey } from '../render/paths';
 import { createdAfterFloor, matchesTitleFilter } from './filter';
 import { NULL_LOGGER, withPrefix } from '../logging';
@@ -309,17 +316,35 @@ export async function syncMeetings(deps: SyncDeps): Promise<SyncReport> {
       // of the shared `usedPaths` set.
       let notePath: string | undefined;
       if (settings.syncTranscripts) {
-        const { segments, skipped } = await readTranscript(
-          deps.meetingsDir,
-          meeting.id,
-          settings.transcriptSource
-        );
-        report.transcriptLinesSkipped += skipped;
-        if (skipped > 0) meetingHasSkippedTranscriptLines = true;
+        // `both` reads each pass separately and keeps them apart, rather than
+        // concatenating: they transcribe the SAME speech, so merging the
+        // segment lists would interleave two tellings of one conversation
+        // into nonsense. Order is refined-then-live because refined is the
+        // one to read; live is there to check it against.
+        const sources: Array<'refined' | 'live'> =
+          settings.transcriptSource === 'both' ? ['refined', 'live'] : [settings.transcriptSource];
 
-        if (segments.length) {
+        const passes: Array<{ label: string; segments: TranscriptSegment[] }> = [];
+        for (const source of sources) {
+          const read = await readTranscript(deps.meetingsDir, meeting.id, source);
+          report.transcriptLinesSkipped += read.skipped;
+          if (read.skipped > 0) meetingHasSkippedTranscriptLines = true;
+          if (read.segments.length) {
+            passes.push({ label: source === 'refined' ? 'Refined' : 'Live', segments: read.segments });
+          }
+        }
+        // Single-source renders keep their original shape exactly — no
+        // heading, byte-identical to what previous versions wrote — so
+        // switching source does not rewrite every transcript in the vault.
+        const multi = settings.transcriptSource === 'both';
+        const segments = multi ? [] : (passes[0]?.segments ?? []);
+        const hasContent = multi ? passes.length > 0 : segments.length > 0;
+
+        if (hasContent) {
           if (settings.transcriptHandling === 'combined') {
-            const body = renderTranscriptBody(segments, speakers, renderOpts);
+            const body = multi
+              ? renderMultiTranscriptBody(passes, speakers, renderOpts)
+              : renderTranscriptBody(segments, speakers, renderOpts);
             if (body) {
               combinedTranscriptBody = body;
               // Counting happens later, alongside the note write: `combined`
@@ -394,18 +419,21 @@ export async function syncMeetings(deps: SyncDeps): Promise<SyncReport> {
             }
 
             try {
+              const transcriptRenderOpts = {
+                ...renderOpts,
+                // Stripped of `.md` to match the wiki-link form the note
+                // side already uses.
+                noteLink: notePath
+                  ? notePath.endsWith('.md')
+                    ? notePath.slice(0, -3)
+                    : notePath
+                  : undefined,
+              };
               await vault.write(
                 transcriptPath,
-                renderTranscript(meeting, segments, speakers, {
-                  ...renderOpts,
-                  // Stripped of `.md` to match the wiki-link form the note
-                  // side already uses.
-                  noteLink: notePath
-                    ? notePath.endsWith('.md')
-                      ? notePath.slice(0, -3)
-                      : notePath
-                    : undefined,
-                })
+                multi
+                  ? renderMultiTranscript(meeting, passes, speakers, transcriptRenderOpts)
+                  : renderTranscript(meeting, segments, speakers, transcriptRenderOpts)
               );
               report.transcripts++;
               wroteSomething = true;
