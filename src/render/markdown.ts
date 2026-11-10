@@ -242,6 +242,35 @@ function convertToggles(body: string, mode: RenderOptions['summaryMode']): strin
   );
 }
 
+/** The `summary` column rendered per summaryMode, or '' when there is nothing
+ *  to show. omit drops the lead paragraph but keeps the sections. */
+function renderSummary(
+  meeting: MeetingRow,
+  speakers: Map<number, string>,
+  opts: RenderOptions
+): string {
+  const summary = meeting.summary?.trim();
+  if (!summary) return '';
+  const substituted = substituteSpeakers(summary, speakers, opts.resolveSpeakerNames);
+  const { lead, sections } = splitAtSections(substituted);
+
+  if (opts.summaryMode === 'omit') return sections;
+
+  const parts: string[] = [];
+  if (opts.summaryMode === 'heading') {
+    parts.push('## Flow Summary');
+    if (lead) parts.push('', lead);
+  } else {
+    // callout mode: quote only the lead paragraph; sections at top level.
+    const quoted = lead
+      ? lead.split('\n').map((l) => (l ? `> ${l}` : '>')).join('\n')
+      : '';
+    parts.push('> [!summary]- Flow Summary', quoted);
+  }
+  if (sections) parts.push('', sections);
+  return parts.join('\n');
+}
+
 export function renderNote(
   meeting: MeetingRow,
   speakers: Map<number, string>,
@@ -253,40 +282,13 @@ export function renderNote(
   body = substituteSpeakers(body, speakers, opts.resolveSpeakerNames);
   body = body.replace(/\n{3,}/g, '\n\n').trim();
 
-  // If body is empty after all processing and summary exists, render the summary as fallback.
-  if (!body && meeting.summary?.trim()) {
-    const summary = meeting.summary.trim();
-    const substituted = substituteSpeakers(summary, speakers, opts.resolveSpeakerNames);
-    const { lead, sections } = splitAtSections(substituted);
-
-    if (opts.summaryMode === 'omit') {
-      // User explicitly asked to omit summaries; drop lead paragraph but keep sections.
-      if (sections) {
-        body = sections;
-      } else {
-        // No sections, so frontmatter-only outcome.
-        const parts = [frontmatter(meeting, speakers, 'note')];
-        if (opts.transcriptLink) parts.push(`[[${opts.transcriptLink}]]`, '');
-        return parts.join('\n');
-      }
-    } else if (opts.summaryMode === 'heading') {
-      // Render as plain heading: title, lead, then sections at top level.
-      const parts: string[] = [];
-      parts.push('## Flow Summary');
-      if (lead) parts.push('', lead);
-      if (sections) parts.push('', sections);
-      body = parts.join('\n');
-    } else {
-      // callout mode: quote only the lead paragraph; sections at top level.
-      const parts: string[] = [];
-      const quoted = lead
-        ? lead.split('\n').map((l) => (l ? `> ${l}` : '>')).join('\n')
-        : '';
-      parts.push('> [!summary]- Flow Summary', quoted);
-      if (sections) parts.push('', sections);
-      body = parts.join('\n');
-    }
-  }
+  // Older Wispr builds put the summary inside `notes` as a :::toggle block.
+  // Current ones keep it in `summary`, and `notes` holds only My Thoughts.
+  const summary = /^:::toggle/m.test(meeting.notes ?? '')
+    ? ''
+    : renderSummary(meeting, speakers, opts);
+  if (summary && body) body = `${summary}\n\n## My Thoughts\n\n${body}`;
+  else if (summary) body = summary;
 
   const parts = [frontmatter(meeting, speakers, 'note')];
   if (body) parts.push(body, '');

@@ -459,6 +459,19 @@ describe('renderNote with real-shape notes', () => {
     expect(withoutResolution).toContain('Asked by <@speaker:2> to resolve this.');
   });
 
+  it('keeps the summary when My Thoughts has text', () => {
+    const testMeeting: MeetingRow = {
+      ...REAL_MEETING,
+      notes: 'Note down on credit limit filter.',
+      summary: 'Standup recap.\n\n### Credit Limits\n- filter by limit',
+    };
+    const md = renderNote(testMeeting, SPEAKERS, OPTS);
+    expect(md).toContain('> [!summary]- Flow Summary\n> Standup recap.');
+    expect(md).toContain('### Credit Limits');
+    expect(md).toContain('## My Thoughts\n\nNote down on credit limit filter.');
+    expect(md.indexOf('Standup recap.')).toBeLessThan(md.indexOf('## My Thoughts'));
+  });
+
   it('non-empty notes never use summary fallback (data loss guard)', () => {
     const testMeeting: MeetingRow = { ...REAL_MEETING, notes: ':::toggle\n## Flow Summary\n\nFrom notes field.\n:::\n', summary: 'From summary field.' };
     const md = renderNote(testMeeting, SPEAKERS, OPTS);
