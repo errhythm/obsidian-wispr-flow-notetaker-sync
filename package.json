@@ -1,6 +1,6 @@
 {
   "name": "obsidian-wispr-flow-notetaker-sync",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Sync Wispr Flow meeting notes and transcripts into your vault.",
   "license": "MIT",
   "private": true,
